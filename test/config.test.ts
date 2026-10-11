@@ -7,7 +7,11 @@ import { ConfigError, loadConfig, normalizeHost, parseEnvFile } from "../src/con
 describe("parseEnvFile", () => {
   test("handles comments, export, CRLF and matching quotes", () => {
     const text = "# kvm\r\nexport KVM_USER=\"admin\"\r\nKVM_PASS='p@ss=word'\nKVM_HOST = 192.168.8.100\n";
-    expect(parseEnvFile(text)).toEqual({ KVM_USER: "admin", KVM_PASS: "p@ss=word", KVM_HOST: "192.168.8.100" });
+    expect(parseEnvFile(text)).toEqual({
+      KVM_USER: "admin",
+      KVM_PASS: "p@ss=word",
+      KVM_HOST: "192.168.8.100",
+    });
   });
 
   test("rejects unbalanced quotes instead of sending a quote to the device", () => {
