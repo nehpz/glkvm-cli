@@ -45,7 +45,7 @@ KVM_INSECURE=1
 EOF
 ```
 
-The session token from `POST /api/auth/login` is cached at `${XDG_CACHE_HOME:-~/.cache}/glkvm-cli/<host>.token` (mode 0600) and refreshed automatically when the device rejects it.
+The session token from `POST /api/auth/login` is cached at `${XDG_CACHE_HOME:-~/.cache}/glkvm-cli/<host>.token` (mode 0600) alongside a hash of the credentials that obtained it, so changing `KVM_USER`/`KVM_PASS` forces a fresh login. It is refreshed automatically when the device rejects it.
 
 ## Commands
 

@@ -59,12 +59,22 @@ test("a stale cached token triggers one re-login and the new token is cached pri
   const result = await new Kvm(cfg, tokenFile).call("/atx");
   expect(result).toEqual({ power: "on" });
   expect(logins).toBe(1);
-  expect(readFileSync(tokenFile, "utf-8")).toBe(validToken);
+  expect(readFileSync(tokenFile, "utf-8").endsWith(`\n${validToken}`)).toBe(
+    true
+  );
   expect(statSync(tokenFile).mode.toString(8).endsWith("600")).toBe(true);
 
   // A second client reuses the cached token without logging in again.
   await new Kvm(cfg, tokenFile).call("/atx");
   expect(logins).toBe(1);
+});
+
+test("a changed password is not masked by a token cached under the old one", async () => {
+  await new Kvm(cfg, tokenFile).call("/atx");
+  const failure: unknown = await new Kvm({ ...cfg, pass: "wrong" }, tokenFile)
+    .call("/atx")
+    .catch((error: unknown) => error);
+  expect(String(failure)).toContain("login failed (403)");
 });
 
 test("bad credentials surface the device's error", async () => {

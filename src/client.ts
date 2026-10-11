@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -62,10 +63,15 @@ export class Kvm {
   private readonly tokenFile: string;
   private readonly cfg: Config;
   private token: string | undefined;
+  /** Ties the cached token to the credentials that produced it. */
+  private readonly credentialId: string;
 
   constructor(cfg: Config, tokenFile = defaultTokenFile(cfg.baseUrl)) {
     this.cfg = cfg;
     this.tokenFile = tokenFile;
+    this.credentialId = createHash("sha256")
+      .update(`${cfg.baseUrl}\0${cfg.user}\0${cfg.pass}`)
+      .digest("hex");
   }
 
   async login(): Promise<void> {
@@ -87,7 +93,9 @@ export class Kvm {
     }
     this.token = token;
     mkdirSync(path.dirname(this.tokenFile), { mode: 0o700, recursive: true });
-    writeFileSync(this.tokenFile, token, { mode: 0o600 });
+    writeFileSync(this.tokenFile, `${this.credentialId}\n${token}`, {
+      mode: 0o600,
+    });
     // `mode` above only applies when the file is created.
     chmodSync(this.tokenFile, 0o600);
   }
@@ -96,8 +104,12 @@ export class Kvm {
   async request(apiPath: string, opts: RequestOptions = {}): Promise<Response> {
     if (this.token === undefined) {
       try {
-        const cached = readFileSync(this.tokenFile, "utf-8").trim();
-        this.token = cached === "" ? undefined : cached;
+        const [id, cached = ""] = readFileSync(this.tokenFile, "utf-8")
+          .trim()
+          .split("\n");
+        // A token from other credentials (e.g. before a password change) is ignored.
+        this.token =
+          id === this.credentialId && cached !== "" ? cached : undefined;
       } catch {
         // No cached token yet.
       }
