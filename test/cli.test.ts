@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { expandKeys, parseArgs, parseShortcut } from "../src/cli";
+import { expandKeys, parseShortcut, run } from "../src/cli";
 import { CliError } from "../src/errors";
 
 const exitCodeOf = (fn: () => unknown): number | undefined => {
@@ -45,14 +45,18 @@ test("parseShortcut needs at least two valid codes", () => {
   expect(exitCodeOf(() => parseShortcut("ControlLeft+"))).toBe(2);
 });
 
-test("parseArgs separates value flags, boolean flags and positionals", () => {
-  expect(parseArgs(["atx", "click", "reset", "--port", "1", "--yes"])).toEqual({
-    flags: { port: "1", yes: true },
-    positional: ["atx", "click", "reset"],
-  });
-  expect(parseArgs(["key", "--delay=50", "--", "--not-a-flag"])).toEqual({
-    flags: { delay: "50" },
-    positional: ["key", "--not-a-flag"],
-  });
-  expect(exitCodeOf(() => parseArgs(["port", "--port"]))).toBe(2);
+test("power commands with a missing or bad --port fail as usage errors before config or network", async () => {
+  // A nonexistent config makes any regression fail with exit 1 instead of reaching a real device.
+  process.env.KVM_ENV_FILE = "/nonexistent/glkvm.env";
+  delete process.env.KVM_HOST;
+  const failures = await Promise.all(
+    [
+      ["atx", "click", "reset", "--port", "--yes"],
+      ["atx", "click", "reset", "--yes", "--port"],
+      ["atx", "click", "reset", "--port=x", "--yes"],
+    ].map(async (argv) => await run(argv).catch((error: unknown) => error))
+  );
+  expect(
+    failures.map((f) => (f instanceof CliError ? f.exitCode : undefined))
+  ).toEqual([2, 2, 2]);
 });

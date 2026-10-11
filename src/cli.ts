@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { parseArgs } from "node:util";
+
 import { Kvm } from "./client";
 import { loadConfig } from "./config";
 import { CliError, usageError } from "./errors";
@@ -25,14 +27,8 @@ Config (environment, or KEY=value lines in $KVM_ENV_FILE, default ~/.config/glkv
   KVM_PASS      web UI password
   KVM_INSECURE  1 to skip TLS verification (the devices ship self-signed certs)`;
 
-type Flags = Record<string, string | true>;
+type Flags = Record<string, string | boolean | undefined>;
 
-export interface ParsedArgs {
-  positional: string[];
-  flags: Flags;
-}
-
-const VALUE_FLAGS: Record<string, true> = { delay: true, port: true };
 const KEY_CODE = /^[A-Za-z][A-Za-z0-9]*$/u;
 const KEY_SPEC = /^(?<code>[^*]+)(?:\*(?<count>.+))?$/u;
 const MAX_REPEAT = 100;
@@ -46,40 +42,6 @@ const ATX_ACTIONS: Record<string, true> = {
   off_hard: true,
   on: true,
   reset_hard: true,
-};
-
-export const parseArgs = (argv: string[]): ParsedArgs => {
-  const positional: string[] = [];
-  const flags: Flags = {};
-  let i = 0;
-  while (i < argv.length) {
-    const arg = argv[i] ?? "";
-    i += 1;
-    if (arg === "--") {
-      positional.push(...argv.slice(i));
-      break;
-    }
-    if (!arg.startsWith("--")) {
-      positional.push(arg);
-      continue;
-    }
-    const eq = arg.indexOf("=");
-    const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
-    if (VALUE_FLAGS[name] !== true) {
-      flags[name] = true;
-      continue;
-    }
-    let value = eq === -1 ? undefined : arg.slice(eq + 1);
-    if (value === undefined) {
-      value = argv[i];
-      i += 1;
-    }
-    if (value === undefined) {
-      throw usageError(`--${name} needs a value`);
-    }
-    flags[name] = value;
-  }
-  return { flags, positional };
 };
 
 /** Expands `ArrowDown*3` into three `ArrowDown` taps. */
@@ -109,7 +71,10 @@ export const parseShortcut = (spec: string): string[] => {
   return keys;
 };
 
-const parseCount = (value: string | true | undefined, name: string): number => {
+const parseCount = (
+  value: string | boolean | undefined,
+  name: string
+): number => {
   const n = typeof value === "string" ? Number(value) : Number.NaN;
   if (!Number.isInteger(n) || n < 0) {
     throw usageError(`--${name} needs a non-negative integer`);
@@ -274,7 +239,12 @@ export const run = async (
   argv: string[],
   out: NodeJS.WriteStream = process.stdout
 ): Promise<void> => {
-  const { positional, flags } = parseArgs(argv);
+  const { values: flags, positionals: positional } = parseArgs({
+    allowPositionals: true,
+    args: argv,
+    options: { delay: { type: "string" }, port: { type: "string" } },
+    strict: false,
+  });
   const [cmd, ...rest] = positional;
   if (cmd === undefined || cmd === "help" || flags.help !== undefined) {
     out.write(`${USAGE}\n`);
