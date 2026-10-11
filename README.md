@@ -52,7 +52,7 @@ The session token from `POST /api/auth/login` is cached at `${XDG_CACHE_HOME:-~/
 | Command | What it does |
 | --- | --- |
 | `status` | ATX, active port, video links, HID and streamer state as JSON |
-| `snap [FILE\|-]` | Save a JPEG of the screen; `-` writes to stdout |
+| `snap [FILE\|-]` | Save a JPEG of the screen (default `snapshot-<time>.jpg`); `-` writes to stdout |
 | `port [N]` | Show the active switch port, or switch to port `N` (0-based) |
 | `key CODE[*N]... [--delay MS]` | Tap keys in order (default 150 ms apart) |
 | `shortcut CODE+CODE...` | Press keys together, e.g. `ControlLeft+AltLeft+Delete` |
@@ -60,6 +60,7 @@ The session token from `POST /api/auth/login` is cached at `${XDG_CACHE_HOME:-~/
 | `atx` | ATX power and LED state |
 | `atx click power\|power_long\|reset [--port N] --yes` | Press a front-panel button (`--port` targets a switch port) |
 | `atx power on\|off\|off_hard\|reset_hard --yes` | Ask kvmd to reach a power state |
+| `help` | Print usage (also `--help`, or no arguments) |
 
 Key codes are browser [`KeyboardEvent.code`](https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values) names: `Escape`, `Enter`, `F2`, `Delete`, `ArrowDown`, `KeyA`, `Digit1`, …
 
