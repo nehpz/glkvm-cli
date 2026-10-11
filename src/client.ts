@@ -1,21 +1,10 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import os from "node:os";
+import path from "node:path";
+
 import type { Config } from "./config";
-
-export class KvmError extends Error {
-  constructor(
-    message: string,
-    readonly status?: number,
-  ) {
-    super(message);
-  }
-}
-
-interface Envelope<T> {
-  ok: boolean;
-  result: T & { error?: string; error_msg?: string };
-}
+import { CliError } from "./errors";
+import { isRecord } from "./guards";
 
 interface RequestOptions {
   method?: "GET" | "POST";
@@ -24,6 +13,44 @@ interface RequestOptions {
   timeoutMs?: number;
 }
 
+interface Envelope {
+  ok: boolean;
+  result: unknown;
+}
+
+const isEnvelope = (value: unknown): value is Envelope =>
+  isRecord(value) && typeof value.ok === "boolean" && "result" in value;
+
+/** kvmd reports failures as `{ok: false, result: {error, error_msg}}`. */
+const describeFailure = (result: unknown, fallback: string): string => {
+  if (isRecord(result)) {
+    const message = result.error_msg ?? result.error;
+    if (typeof message === "string") {
+      return message;
+    }
+  }
+  return fallback;
+};
+
+const errorMessage = async (res: Response): Promise<string> => {
+  const text = await res.text();
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return isEnvelope(parsed)
+      ? describeFailure(parsed.result, text)
+      : text.slice(0, 200);
+  } catch {
+    return text.slice(0, 200);
+  }
+};
+
+const defaultTokenFile = (baseUrl: string): string =>
+  path.join(
+    process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache"),
+    "glkvm-cli",
+    `${new URL(baseUrl).host.replaceAll(/[^\w.-]/gu, "_")}.token`
+  );
+
 /**
  * Client for the PiKVM-derived `kvmd` HTTP API exposed by GL.iNet KVMs
  * (`https://<host>/api/...`). Auth uses the `auth_token` cookie returned by
@@ -31,63 +58,82 @@ interface RequestOptions {
  * refreshed once when the device answers 401/403.
  */
 export class Kvm {
-  private token: string | undefined;
   readonly tokenFile: string;
+  private readonly cfg: Config;
+  private token: string | undefined;
 
-  constructor(
-    private readonly cfg: Config,
-    tokenFile = join(
-      process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"),
-      "glkvm-cli",
-      `${new URL(cfg.baseUrl).host.replace(/[^\w.-]/g, "_")}.token`,
-    ),
-  ) {
+  constructor(cfg: Config, tokenFile = defaultTokenFile(cfg.baseUrl)) {
+    this.cfg = cfg;
     this.tokenFile = tokenFile;
   }
 
   async login(): Promise<string> {
     const res = await this.fetch("/auth/login", {
+      body: new URLSearchParams({ passwd: this.cfg.pass, user: this.cfg.user }),
       method: "POST",
-      body: new URLSearchParams({ user: this.cfg.user, passwd: this.cfg.pass }),
     });
     if (res.status !== 200) {
-      throw new KvmError(`login failed (${res.status}): ${await errorMessage(res)}`, res.status);
+      throw new CliError(
+        `login failed (${res.status}): ${await errorMessage(res)}`,
+        1,
+        res.status
+      );
     }
-    const token = /auth_token=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
-    if (!token) throw new KvmError("login succeeded but no auth_token cookie was returned");
+    const cookie = res.headers.get("set-cookie") ?? "";
+    const token = /auth_token=(?<token>[^;]+)/u.exec(cookie)?.groups?.token;
+    if (token === undefined) {
+      throw new CliError(
+        "login succeeded but no auth_token cookie was returned"
+      );
+    }
     this.token = token;
-    mkdirSync(dirname(this.tokenFile), { recursive: true, mode: 0o700 });
+    mkdirSync(path.dirname(this.tokenFile), { mode: 0o700, recursive: true });
     writeFileSync(this.tokenFile, token, { mode: 0o600 });
-    chmodSync(this.tokenFile, 0o600); // `mode` above only applies when the file is created
+    // `mode` above only applies when the file is created.
+    chmodSync(this.tokenFile, 0o600);
     return token;
   }
 
   /** Authenticated request; re-logs in once if the cached token is rejected. */
-  async request(path: string, opts: RequestOptions = {}): Promise<Response> {
-    if (!this.token) {
+  async request(apiPath: string, opts: RequestOptions = {}): Promise<Response> {
+    if (this.token === undefined) {
       try {
-        this.token = readFileSync(this.tokenFile, "utf8").trim() || undefined;
+        const cached = readFileSync(this.tokenFile, "utf-8").trim();
+        this.token = cached === "" ? undefined : cached;
       } catch {
         // No cached token yet.
       }
     }
-    if (!this.token) await this.login();
-    let res = await this.fetch(path, opts);
-    if (res.status === 401 || res.status === 403) {
+    if (this.token === undefined) {
       await this.login();
-      res = await this.fetch(path, opts);
     }
-    return res;
+    const res = await this.fetch(apiPath, opts);
+    if (res.status !== 401 && res.status !== 403) {
+      return res;
+    }
+    await this.login();
+    return await this.fetch(apiPath, opts);
   }
 
   /** Requests a JSON endpoint and unwraps kvmd's `{ok, result}` envelope. */
-  async call<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-    const res = await this.request(path, opts);
-    const env = (await res.json()) as Envelope<T>;
-    if (!env.ok) {
-      throw new KvmError(`${path}: ${env.result.error_msg ?? env.result.error ?? res.status}`, res.status);
+  async call(apiPath: string, opts: RequestOptions = {}): Promise<unknown> {
+    const res = await this.request(apiPath, opts);
+    const body: unknown = await res.json();
+    if (!isEnvelope(body)) {
+      throw new CliError(
+        `${apiPath}: unexpected response (${res.status})`,
+        1,
+        res.status
+      );
     }
-    return env.result;
+    if (!body.ok) {
+      throw new CliError(
+        `${apiPath}: ${describeFailure(body.result, String(res.status))}`,
+        1,
+        res.status
+      );
+    }
+    return body.result;
   }
 
   /**
@@ -95,48 +141,64 @@ export class Kvm {
    * client holds a `stream=1` websocket, so one is opened for the duration.
    */
   async snapshot(timeoutMs = 20_000): Promise<Uint8Array> {
+    // Ensures a valid token before it is copied into the websocket headers.
     await this.request("/auth/check");
-    const ws = new WebSocket(`${this.cfg.baseUrl.replace(/^http/, "ws")}/api/ws?stream=1`, {
-      headers: { Cookie: `auth_token=${this.token}` },
-      tls: { rejectUnauthorized: !this.cfg.insecure },
-    });
+    const ws = new WebSocket(
+      `${this.cfg.baseUrl.replace(/^http/u, "ws")}/api/ws?stream=1`,
+      {
+        headers: { Cookie: `auth_token=${this.token ?? ""}` },
+        tls: { rejectUnauthorized: !this.cfg.insecure },
+      }
+    );
     const deadline = Date.now() + timeoutMs;
     try {
       while (Date.now() < deadline) {
-        const res = await this.request("/streamer/snapshot", { timeoutMs: 10_000 });
-        if (res.status === 200 && res.headers.get("content-type")?.startsWith("image/")) {
+        // Polling is inherently sequential: wait for the streamer to come up.
+        // oxlint-disable-next-line no-await-in-loop
+        const res = await this.request("/streamer/snapshot", {
+          timeoutMs: 10_000,
+        });
+        const isImage =
+          res.headers.get("content-type")?.startsWith("image/") === true;
+        if (res.status === 200 && isImage) {
+          // oxlint-disable-next-line no-await-in-loop
           return new Uint8Array(await res.arrayBuffer());
         }
         if (res.status !== 503) {
-          throw new KvmError(`snapshot failed (${res.status}): ${await errorMessage(res)}`, res.status);
+          // oxlint-disable-next-line no-await-in-loop
+          const detail = await errorMessage(res);
+          throw new CliError(
+            `snapshot failed (${res.status}): ${detail}`,
+            1,
+            res.status
+          );
         }
+        // oxlint-disable-next-line no-await-in-loop
         await Bun.sleep(1000);
       }
-      throw new KvmError(`no video frame within ${timeoutMs / 1000}s (is a source connected?)`);
+      throw new CliError(
+        `no video frame within ${timeoutMs / 1000}s (is a source connected?)`
+      );
     } finally {
       ws.close();
     }
   }
 
-  private fetch(path: string, opts: RequestOptions = {}): Promise<Response> {
-    const url = new URL(`${this.cfg.baseUrl}/api${path}`);
-    for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, String(v));
-    return fetch(url, {
-      method: opts.method ?? "GET",
+  private async fetch(
+    apiPath: string,
+    opts: RequestOptions = {}
+  ): Promise<Response> {
+    const url = new URL(`${this.cfg.baseUrl}/api${apiPath}`);
+    for (const [key, value] of Object.entries(opts.query ?? {})) {
+      url.searchParams.set(key, String(value));
+    }
+    return await fetch(url, {
       body: opts.body,
-      headers: this.token ? { Cookie: `auth_token=${this.token}` } : {},
+      headers:
+        this.token === undefined ? {} : { Cookie: `auth_token=${this.token}` },
+      method: opts.method ?? "GET",
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
       tls: { rejectUnauthorized: !this.cfg.insecure },
     });
-  }
-}
-
-async function errorMessage(res: Response): Promise<string> {
-  const text = await res.text();
-  try {
-    const env = JSON.parse(text) as Envelope<unknown>;
-    return env.result.error_msg ?? env.result.error ?? text;
-  } catch {
-    return text.slice(0, 200);
   }
 }

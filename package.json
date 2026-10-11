@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "CLI for GL.iNet (PiKVM-based) KVM-over-IP devices: snapshots, keystrokes, ATX power, switch ports",
   "license": "MIT",
-  "type": "module",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nehpz/glkvm-cli.git"
@@ -14,20 +13,23 @@
   "files": [
     "src"
   ],
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "build": "bun build src/cli.ts --compile --outfile dist/glkvm",
+    "prepare": "vp config"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "ultracite": "8.0.0",
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.1.0",
+    "vite-plus": "1.1.0"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.1.0"
+  },
   "engines": {
     "bun": ">=1.2"
   },
-  "scripts": {
-    "check": "biome ci . && tsc --noEmit && bun test",
-    "lint": "biome ci .",
-    "format": "biome check --write .",
-    "typecheck": "tsc --noEmit",
-    "test": "bun test",
-    "build": "bun build src/cli.ts --compile --outfile dist/glkvm"
-  },
-  "devDependencies": {
-    "@biomejs/biome": "2.5.15",
-    "@types/bun": "1.4.2",
-    "typescript": "7.0.2"
-  }
+  "packageManager": "bun@1.4.3"
 }

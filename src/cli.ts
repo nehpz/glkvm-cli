@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
-import { Kvm, KvmError } from "./client";
-import { ConfigError, loadConfig } from "./config";
+import { Kvm } from "./client";
+import { loadConfig } from "./config";
+import { CliError, usageError } from "./errors";
+import { isRecord } from "./guards";
 
 export const USAGE = `glkvm — control a GL.iNet (PiKVM-based) KVM over its HTTP API
 
@@ -23,199 +25,281 @@ Config (environment, or KEY=value lines in $KVM_ENV_FILE, default ~/.config/glkv
   KVM_PASS      web UI password
   KVM_INSECURE  1 to skip TLS verification (the devices ship self-signed certs)`;
 
+type Flags = Record<string, string | true>;
+
 export interface ParsedArgs {
   positional: string[];
-  flags: Record<string, string | true>;
+  flags: Flags;
 }
 
-const VALUE_FLAGS: Record<string, true> = { port: true, delay: true };
+const VALUE_FLAGS: Record<string, true> = { delay: true, port: true };
+const KEY_CODE = /^[A-Za-z][A-Za-z0-9]*$/u;
+const KEY_SPEC = /^(?<code>[^*]+)(?:\*(?<count>.+))?$/u;
+const MAX_REPEAT = 100;
+const ATX_BUTTONS: Record<string, true> = {
+  power: true,
+  power_long: true,
+  reset: true,
+};
+const ATX_ACTIONS: Record<string, true> = {
+  off: true,
+  off_hard: true,
+  on: true,
+  reset_hard: true,
+};
 
-export function parseArgs(argv: string[]): ParsedArgs {
+export const parseArgs = (argv: string[]): ParsedArgs => {
   const positional: string[] = [];
-  const flags: Record<string, string | true> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i] as string;
+  const flags: Flags = {};
+  let i = 0;
+  while (i < argv.length) {
+    const arg = argv[i] ?? "";
+    i += 1;
     if (arg === "--") {
-      positional.push(...argv.slice(i + 1));
+      positional.push(...argv.slice(i));
       break;
     }
     if (!arg.startsWith("--")) {
       positional.push(arg);
       continue;
     }
-    const [name, inline] = arg.slice(2).split("=", 2) as [string, string | undefined];
-    if (!VALUE_FLAGS[name]) {
+    const eq = arg.indexOf("=");
+    const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
+    if (VALUE_FLAGS[name] !== true) {
       flags[name] = true;
       continue;
     }
-    const value = inline ?? argv[++i];
-    if (value === undefined) throw new UsageError(`--${name} needs a value`);
+    let value = eq === -1 ? undefined : arg.slice(eq + 1);
+    if (value === undefined) {
+      value = argv[i];
+      i += 1;
+    }
+    if (value === undefined) {
+      throw usageError(`--${name} needs a value`);
+    }
     flags[name] = value;
   }
-  return { positional, flags };
-}
-
-const KEY_CODE = /^[A-Za-z][A-Za-z0-9]*$/;
+  return { flags, positional };
+};
 
 /** Expands `ArrowDown*3` into three `ArrowDown` taps. */
-export function expandKeys(specs: string[]): string[] {
-  return specs.flatMap((spec) => {
-    const [code, count = "1"] = spec.split("*", 2) as [string, string | undefined];
-    const n = Number(count);
-    if (!KEY_CODE.test(code) || !Number.isInteger(n) || n < 1 || n > 100) {
-      throw new UsageError(`invalid key spec "${spec}" (expected CODE or CODE*N, N 1-100)`);
+export const expandKeys = (specs: string[]): string[] =>
+  specs.flatMap((spec) => {
+    const groups = KEY_SPEC.exec(spec)?.groups;
+    const code = groups?.code ?? "";
+    const count = Number(groups?.count ?? "1");
+    if (
+      !KEY_CODE.test(code) ||
+      !Number.isInteger(count) ||
+      count < 1 ||
+      count > MAX_REPEAT
+    ) {
+      throw usageError(
+        `invalid key spec "${spec}" (expected CODE or CODE*N, N 1-${MAX_REPEAT})`
+      );
     }
-    return Array<string>(n).fill(code);
+    return Array.from({ length: count }, () => code);
   });
-}
 
-export function parseShortcut(spec: string): string[] {
+export const parseShortcut = (spec: string): string[] => {
   const keys = spec.split("+");
-  if (keys.length < 2 || !keys.every((k) => KEY_CODE.test(k))) {
-    throw new UsageError(`invalid shortcut "${spec}" (expected CODE+CODE...)`);
+  if (keys.length < 2 || !keys.every((key) => KEY_CODE.test(key))) {
+    throw usageError(`invalid shortcut "${spec}" (expected CODE+CODE...)`);
   }
   return keys;
-}
+};
 
-function intFlag(value: string | true | undefined, name: string, fallback?: number): number {
-  if (value === undefined && fallback !== undefined) return fallback;
-  const n = Number(value);
-  if (typeof value !== "string" || !Number.isInteger(n) || n < 0) {
-    throw new UsageError(`--${name} needs a non-negative integer`);
+const parseCount = (value: string | true | undefined, name: string): number => {
+  const n = typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isInteger(n) || n < 0) {
+    throw usageError(`--${name} needs a non-negative integer`);
   }
   return n;
-}
+};
 
-export class UsageError extends Error {}
-
-const ATX_BUTTONS: Record<string, true> = { power: true, power_long: true, reset: true };
-const ATX_ACTIONS: Record<string, true> = { on: true, off: true, off_hard: true, reset_hard: true };
-
-interface SwitchState {
-  summary: { active_port: number; active_id: string };
-  video: { links: boolean[] };
-}
-
-export async function run(argv: string[], out = process.stdout): Promise<void> {
-  const { positional, flags } = parseArgs(argv);
-  const [cmd, ...rest] = positional;
-  if (!cmd || flags.help || cmd === "help") {
-    out.write(`${USAGE}\n`);
-    return;
+/** Reads the parts of `GET /api/switch` the CLI reports. */
+const parseSwitch = (
+  value: unknown
+): { port: number; videoLinks: boolean[] } => {
+  const summary = isRecord(value) ? value.summary : undefined;
+  const video = isRecord(value) ? value.video : undefined;
+  const port = isRecord(summary) ? summary.active_port : undefined;
+  const links = isRecord(video) ? video.links : undefined;
+  if (typeof port !== "number" || !Array.isArray(links)) {
+    throw new CliError("/switch: unexpected response shape");
   }
-  const print = (value: unknown) => out.write(`${JSON.stringify(value, null, 2)}\n`);
-  const action = plan(cmd, rest, flags, out, print);
-  await action(new Kvm(await loadConfig()));
+  return { port, videoLinks: links.map(Boolean) };
+};
+
+interface Io {
+  out: NodeJS.WriteStream;
+  print: (value: unknown) => void;
 }
 
 type Action = (kvm: Kvm) => Promise<void>;
 
-/** Validates arguments without touching config or the network, then returns the work to do. */
-function plan(
-  cmd: string,
-  rest: string[],
-  flags: ParsedArgs["flags"],
-  out: NodeJS.WriteStream,
-  print: (value: unknown) => void,
-): Action {
-  switch (cmd) {
-    case "status":
-      return async (kvm) => {
-        const [atx, sw, hid, streamer] = await Promise.all([
-          kvm.call("/atx"),
-          kvm.call<SwitchState>("/switch"),
-          kvm.call("/hid"),
-          kvm.call<{ streamer: unknown }>("/streamer"),
-        ]);
-        print({
-          atx,
-          port: sw.summary.active_port,
-          videoLinks: sw.video.links,
-          hid,
-          streamer: streamer.streamer,
-        });
-      };
-    case "snap": {
-      const target = rest[0] ?? `snapshot-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
-      return async (kvm) => {
-        const jpeg = await kvm.snapshot();
-        if (target === "-") {
-          out.write(jpeg);
-        } else {
-          await Bun.write(target, jpeg);
-          out.write(`${target}\n`);
-        }
-      };
-    }
-    case "port": {
-      const port = rest[0] === undefined ? undefined : intFlag(rest[0], "port");
-      return async (kvm) => {
-        if (port !== undefined) await kvm.call("/switch/set_active", { method: "POST", query: { port } });
-        const sw = await kvm.call<SwitchState>("/switch");
-        print({ port: sw.summary.active_port, videoLinks: sw.video.links });
-      };
-    }
-    case "key": {
-      const keys = expandKeys(rest);
-      if (!keys.length) throw new UsageError("key: give at least one key CODE");
-      const delay = intFlag(flags.delay, "delay", 150);
-      return async (kvm) => {
-        for (const [i, key] of keys.entries()) {
-          if (i) await Bun.sleep(delay);
-          await kvm.call("/hid/events/send_key", { method: "POST", query: { key } });
-        }
-      };
-    }
-    case "shortcut": {
-      if (rest.length !== 1) throw new UsageError("shortcut: give exactly one CODE+CODE spec");
-      const keys = parseShortcut(rest[0] as string).join(",");
-      return async (kvm) => {
-        await kvm.call("/hid/events/send_shortcut", { method: "POST", query: { keys } });
-      };
-    }
-    case "type": {
-      if (!rest.length) throw new UsageError("type: give the text to type");
-      const body = rest.join(" ");
-      return async (kvm) => {
-        await kvm.call("/hid/print", { method: "POST", query: { limit: 0 }, body });
-      };
-    }
-    case "atx": {
-      const [sub, arg] = rest;
-      if (sub === undefined) return async (kvm) => print(await kvm.call("/atx"));
-      if (sub === "click" && arg && ATX_BUTTONS[arg]) {
-        if (!flags.yes) throw new UsageError("atx click affects host power; pass --yes");
-        const port = flags.port === undefined ? undefined : intFlag(flags.port, "port");
-        return async (kvm) => {
-          if (port === undefined) {
-            await kvm.call("/atx/click", { method: "POST", query: { button: arg } });
-          } else {
-            await kvm.call("/switch/atx/click", { method: "POST", query: { port, button: arg } });
-          }
-        };
-      }
-      if (sub === "power" && arg && ATX_ACTIONS[arg]) {
-        if (!flags.yes) throw new UsageError("atx power affects host power; pass --yes");
-        return async (kvm) => {
-          await kvm.call("/atx/power", { method: "POST", query: { action: arg } });
-        };
-      }
-      throw new UsageError(
-        "atx: expected `click power|power_long|reset` or `power on|off|off_hard|reset_hard`",
-      );
-    }
-    default:
-      throw new UsageError(`unknown command "${cmd}"`);
+/** Each handler validates its arguments without config or network access, then returns the work. */
+type Handler = (rest: string[], flags: Flags, io: Io) => Action;
+
+const atx: Handler = (rest, flags, { print }) => {
+  const [sub, arg = ""] = rest;
+  if (sub === undefined) {
+    return async (kvm) => {
+      print(await kvm.call("/atx"));
+    };
   }
-}
+  const known =
+    sub === "click" ? ATX_BUTTONS[arg] : sub === "power" && ATX_ACTIONS[arg];
+  if (known !== true) {
+    throw usageError(
+      "atx: expected `click power|power_long|reset` or `power on|off|off_hard|reset_hard`"
+    );
+  }
+  if (flags.yes === undefined) {
+    throw usageError(`atx ${sub} affects host power; pass --yes`);
+  }
+  if (sub === "power") {
+    return async (kvm) => {
+      await kvm.call("/atx/power", { method: "POST", query: { action: arg } });
+    };
+  }
+  const port =
+    flags.port === undefined ? undefined : parseCount(flags.port, "port");
+  return async (kvm) => {
+    await (port === undefined
+      ? kvm.call("/atx/click", { method: "POST", query: { button: arg } })
+      : kvm.call("/switch/atx/click", {
+          method: "POST",
+          query: { button: arg, port },
+        }));
+  };
+};
+
+const COMMANDS: Record<string, Handler> = {
+  atx,
+  key: (rest, flags) => {
+    const keys = expandKeys(rest);
+    if (keys.length === 0) {
+      throw usageError("key: give at least one key CODE");
+    }
+    const delay =
+      flags.delay === undefined ? 150 : parseCount(flags.delay, "delay");
+    return async (kvm) => {
+      for (const [i, key] of keys.entries()) {
+        // Keys must arrive in order with a gap, so each tap waits for the last.
+        if (i > 0) {
+          // oxlint-disable-next-line no-await-in-loop
+          await Bun.sleep(delay);
+        }
+        // oxlint-disable-next-line no-await-in-loop
+        await kvm.call("/hid/events/send_key", {
+          method: "POST",
+          query: { key },
+        });
+      }
+    };
+  },
+  port: (rest, _flags, { print }) => {
+    const port =
+      rest[0] === undefined ? undefined : parseCount(rest[0], "port");
+    return async (kvm) => {
+      if (port !== undefined) {
+        await kvm.call("/switch/set_active", {
+          method: "POST",
+          query: { port },
+        });
+      }
+      print(parseSwitch(await kvm.call("/switch")));
+    };
+  },
+  shortcut: (rest) => {
+    const [spec] = rest;
+    if (spec === undefined || rest.length !== 1) {
+      throw usageError("shortcut: give exactly one CODE+CODE spec");
+    }
+    const keys = parseShortcut(spec).join(",");
+    return async (kvm) => {
+      await kvm.call("/hid/events/send_shortcut", {
+        method: "POST",
+        query: { keys },
+      });
+    };
+  },
+  snap: (rest, _flags, { out }) => {
+    const target =
+      rest[0] ??
+      `snapshot-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}.jpg`;
+    return async (kvm) => {
+      const jpeg = await kvm.snapshot();
+      if (target === "-") {
+        out.write(jpeg);
+        return;
+      }
+      await Bun.write(target, jpeg);
+      out.write(`${target}\n`);
+    };
+  },
+  status:
+    (_rest, _flags, { print }) =>
+    async (kvm) => {
+      const [atxState, sw, hid, streamer] = await Promise.all([
+        kvm.call("/atx"),
+        kvm.call("/switch"),
+        kvm.call("/hid"),
+        kvm.call("/streamer"),
+      ]);
+      print({
+        atx: atxState,
+        hid,
+        streamer: isRecord(streamer) ? streamer.streamer : null,
+        ...parseSwitch(sw),
+      });
+    },
+  type: (rest) => {
+    if (rest.length === 0) {
+      throw usageError("type: give the text to type");
+    }
+    const body = rest.join(" ");
+    return async (kvm) => {
+      await kvm.call("/hid/print", {
+        body,
+        method: "POST",
+        query: { limit: 0 },
+      });
+    };
+  },
+};
+
+export const run = async (
+  argv: string[],
+  out: NodeJS.WriteStream = process.stdout
+): Promise<void> => {
+  const { positional, flags } = parseArgs(argv);
+  const [cmd, ...rest] = positional;
+  if (cmd === undefined || cmd === "help" || flags.help !== undefined) {
+    out.write(`${USAGE}\n`);
+    return;
+  }
+  const handler = COMMANDS[cmd];
+  if (handler === undefined) {
+    throw usageError(`unknown command "${cmd}"`);
+  }
+  const print = (value: unknown): void => {
+    out.write(`${JSON.stringify(value, null, 2)}\n`);
+  };
+  const action = handler(rest, flags, { out, print });
+  await action(new Kvm(await loadConfig()));
+};
 
 if (import.meta.main) {
   try {
     await run(Bun.argv.slice(2));
-  } catch (err) {
-    const known = err instanceof UsageError || err instanceof ConfigError || err instanceof KvmError;
-    console.error(`glkvm: ${known ? err.message : String(err)}`);
-    if (err instanceof UsageError) console.error("Run `glkvm help` for usage.");
-    process.exit(err instanceof UsageError ? 2 : 1);
+  } catch (error) {
+    const known = error instanceof CliError;
+    console.error(`glkvm: ${known ? error.message : String(error)}`);
+    if (known && error.exitCode === 2) {
+      console.error("Run `glkvm help` for usage.");
+    }
+    process.exit(known ? error.exitCode : 1);
   }
 }

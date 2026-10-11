@@ -1,5 +1,0 @@
-# Reproducible local tooling; CI reads the Bun version from .bun-version.
-[tools]
-bun = "1.4.3"
-actionlint = "1.7.12"
-prek = "latest"
