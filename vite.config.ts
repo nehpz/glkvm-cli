@@ -15,5 +15,7 @@ export default defineConfig({
   },
   staged: {
     "*": "vp check --fix",
+    // Same linter CI runs; needs `actionlint` on PATH (brew/go install).
+    ".github/workflows/*.{yml,yaml}": "actionlint",
   },
 });

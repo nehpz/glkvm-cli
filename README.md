@@ -90,7 +90,7 @@ bun test
 bun run build       # standalone binary -> dist/glkvm
 ```
 
-The pre-commit hook (`.vite-hooks/pre-commit`) runs `vp check --fix` on staged files.
+The pre-commit hook (`.vite-hooks/pre-commit`) runs `vp check --fix` on staged files, and [`actionlint`](https://github.com/rhysd/actionlint) on staged workflow files. Install it first (`brew install actionlint` or `go install github.com/rhysd/actionlint/cmd/actionlint@latest`).
 
 ## License
 
