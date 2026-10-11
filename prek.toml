@@ -1,0 +1,35 @@
+#:schema: https://www.schemastore.org/prek.json
+
+[[repos]]
+repo = "builtin"
+hooks = [
+    { id = "trailing-whitespace" },
+    { id = "end-of-file-fixer" },
+    { id = "check-added-large-files" },
+    { id = "detect-private-key" },
+]
+
+[[repos]]
+repo = "local"
+[[repos.hooks]]
+id = "biome"
+name = "biome ci"
+entry = "bunx biome ci ."
+language = "system"
+pass_filenames = false
+
+[[repos.hooks]]
+id = "tsc"
+name = "tsc --noEmit"
+entry = "bunx tsc --noEmit"
+language = "system"
+types = ["ts"]
+pass_filenames = false
+
+[[repos.hooks]]
+id = "bun-test"
+name = "bun test"
+entry = "bun test"
+language = "system"
+pass_filenames = false
+stages = ["pre-push"]
