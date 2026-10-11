@@ -29,7 +29,7 @@ jobs:
           cache: true
 
       - run: vp check
-      - run: bun test
+      - run: vp run test
 
   build:
     name: Build binary (${{ matrix.os }})
@@ -47,7 +47,7 @@ jobs:
         with:
           cache: true
 
-      - run: bun run build
+      - run: vp run build
       - name: Smoke-test the binary
         run: |
           ./dist/glkvm help | grep -q '^Usage:'

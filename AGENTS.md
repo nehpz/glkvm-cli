@@ -35,10 +35,10 @@ argv → run() → parseArgs → COMMANDS[cmd] handler (validates, returns Actio
 vp install            # canonical install (bun install also works); runs `vp config` hooks via prepare
 vp check              # oxfmt + oxlint + type-aware typecheck (no separate tsc/eslint/prettier)
 vp check --fix        # autofix
-bun test              # all tests
-bun test test/cli.test.ts      # one file
-bun test -t "expandKeys"       # by name
-bun run build         # bun build src/cli.ts --compile --outfile dist/glkvm
+vpr test              # all tests (vp run → bun test; never `vp test`, that is Vitest)
+vpr test test/cli.test.ts     # one file
+vpr test -t "expandKeys"      # by name
+vpr build             # vp run → bun build src/cli.ts --compile --outfile dist/glkvm (never `vp build`, that is Vite)
 ./dist/glkvm help     # smoke the binary
 bun src/cli.ts status # run from source (needs KVM_* config)
 ```
@@ -71,11 +71,11 @@ bun src/cli.ts status # run from source (needs KVM_* config)
 
 ## Testing & QA
 
-- Run `bun test` for the suite or `bun test --coverage` for a coverage report; no coverage threshold is configured.
+- Run `vpr test` for the suite or `vpr test --coverage` for a coverage report; no coverage threshold is configured.
 - **Tests must never contact a real KVM**, since commands can cut host power or send keystrokes. Test new commands with a usage-error case (fails before config/network) and a behavior case against the local fake server with a temporary `tokenFile`. Without an explicit `tokenFile`, `Kvm` writes to the user's real token cache.
 - **HTTP is faked with a real server, not mocks.** `test/client.test.ts` starts `Bun.serve({ port: 0 })` on 127.0.0.1 as a fake kvmd and stops it in `afterAll`. No `mock()`/`spyOn`, no snapshots, no fixture directories.
 - To inject env, pass an object literal to `loadConfig`. `test/cli.test.ts` is the exception: it sets `KVM_ENV_FILE=/nonexistent/...` and deletes `KVM_HOST` to prove that usage errors fire before config or network.
 - Temp files use `os.tmpdir()/glkvm-test-${process.pid}.<ext>` and are removed with `rmSync(…, { force: true })`.
 - To assert an error, capture it as `unknown` first: `const failure: unknown = await fn().catch((e: unknown) => e)`. Then use `toBeInstanceOf(CliError)` or check `exitCode`.
 - Test names are lowercase behavior sentences. Use `describe` only for units with several tests.
-- Before pushing, run `vp check && bun test && bun run build && ./dist/glkvm help`.
+- Before pushing, run `vp check && vpr test && vpr build && ./dist/glkvm help`.

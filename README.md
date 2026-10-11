@@ -87,8 +87,8 @@ Tooling is [Vite+](https://viteplus.dev) (`vp`) with [Ultracite](https://www.ult
 vp install          # installs deps with Bun (packageManager) and sets up git hooks
 vp check            # oxfmt format check, oxlint with type-aware rules, type check
 vp check --fix      # apply formatting and safe lint fixes
-bun test
-bun run build       # standalone binary -> dist/glkvm
+vpr test            # bun test
+vpr build           # bun build --compile -> dist/glkvm
 ```
 
 The pre-commit hook (`.vite-hooks/pre-commit`) runs `vp check --fix` on staged files, and [`actionlint`](https://github.com/rhysd/actionlint) on staged workflow files. Install it first (`brew install actionlint` or `go install github.com/rhysd/actionlint/cmd/actionlint@latest`).
