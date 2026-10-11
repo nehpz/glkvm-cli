@@ -54,9 +54,13 @@ test("power commands with a missing or bad --port fail as usage errors before co
       ["atx", "click", "reset", "--port", "--yes"],
       ["atx", "click", "reset", "--yes", "--port"],
       ["atx", "click", "reset", "--port=x", "--yes"],
+      ["atx", "click", "reset", "--port=", "--yes"],
+      ["atx", "click", "reset", "--port", " ", "--yes"],
+      ["atx", "power", "off", "--port", "1", "--yes"],
+      ["atx", "power", "off", "--port=x", "--yes"],
     ].map(async (argv) => await run(argv).catch((error: unknown) => error))
   );
   expect(
     failures.map((f) => (f instanceof CliError ? f.exitCode : undefined))
-  ).toEqual([2, 2, 2]);
+  ).toEqual([2, 2, 2, 2, 2, 2, 2]);
 });

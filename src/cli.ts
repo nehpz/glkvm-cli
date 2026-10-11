@@ -75,7 +75,10 @@ const parseCount = (
   value: string | boolean | undefined,
   name: string
 ): number => {
-  const n = typeof value === "string" ? Number(value) : Number.NaN;
+  const n =
+    typeof value === "string" && value.trim() !== ""
+      ? Number(value)
+      : Number.NaN;
   if (!Number.isInteger(n) || n < 0) {
     throw usageError(`--${name} needs a non-negative integer`);
   }
@@ -124,6 +127,9 @@ const atx: Handler = (rest, flags, { print }) => {
     throw usageError(`atx ${sub} affects host power; pass --yes`);
   }
   if (sub === "power") {
+    if (flags.port !== undefined) {
+      throw usageError("atx power does not support --port; use atx click");
+    }
     return async (kvm) => {
       await kvm.call("/atx/power", { method: "POST", query: { action: arg } });
     };
