@@ -20,10 +20,10 @@
     "prepare": "vp config"
   },
   "devDependencies": {
-    "@types/bun": "1.4.2",
-    "ultracite": "8.0.0",
+    "@types/bun": "1.4.3",
+    "ultracite": "8.0.1",
     "vite": "npm:@voidzero-dev/vite-plus-core@1.1.0",
-    "vite-plus": "1.1.0"
+    "vite-plus": "1.2.0"
   },
   "overrides": {
     "vite": "npm:@voidzero-dev/vite-plus-core@1.1.0"
